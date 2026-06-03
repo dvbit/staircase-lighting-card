@@ -1,22 +1,16 @@
 /**
- * Staircase Lighting Card v1 - Custom Lovelace Card
+ * Staircase Lighting Card v2
  *
- * Layout:
- *   TOP:           progress bar (time remaining) + timer icon. Hidden when idle.
- *   CENTER:        large light icon, colored by on/off state. Tap = toggle lights.
- *   BELOW CENTER:  mode label (Normal/Dim) + brightness %
- *   BOTTOM-LEFT:   motion bottom + motion top icons (colored when active)
- *   BOTTOM-CENTER: lux icon + value
- *   BOTTOM-RIGHT:  settings gear → popup modal with all parameters
- *
- * YAML config:
+ * Config:
  *   type: custom:staircase-lighting-card
- *   name: scala_piano_1          # slugified device name (entity prefix)
- *   icon: mdi:stairs             # optional, default mdi:stairs
+ *   title: Scala Piano 1              # display name shown under icon
+ *   name: scala_piano_1               # entity prefix (slugified device name)
+ *   light_icon: mdi:ceiling-light     # optional, default mdi:stairs
  *
- * Installation:
- *   1. Copy staircase-lighting-card.js to /config/www/
- *   2. Resources → /local/staircase-lighting-card.js → JavaScript Module
+ * Entity IDs are auto-derived from 'name'. If HA generated different IDs,
+ * override any entity individually:
+ *   entities:
+ *     brightness_dim: number.scala_piano_1_dim_brightness
  */
 
 class StaircaseLightingCard extends HTMLElement {
@@ -26,36 +20,38 @@ class StaircaseLightingCard extends HTMLElement {
     this.attachShadow({ mode: "open" });
     this._hass = null;
     this._config = null;
-    this._entities = {};
+    this._ent = {};
     this._rendered = false;
-    this._timer = null;
+    this._tick = null;
     this._modalOpen = false;
   }
 
   /* ── Config ─────────────────────────────────────────────── */
 
   setConfig(config) {
-    if (!config.name) throw new Error("'name' is required (slugified device name)");
-
+    if (!config.name) throw new Error("'name' is required (entity prefix)");
     this._config = config;
-    this._lightIcon = config.icon || "mdi:stairs";
+    this._lightIcon = config.light_icon || config.icon || "mdi:stairs";
+    this._title = config.title || config.name;
 
+    // Build entity map — user overrides via config.entities
     var n = config.name;
-    this._entities = {
-      state:              "sensor." + n + "_state",
-      mode:               "sensor." + n + "_mode",
-      time_remaining:     "sensor." + n + "_time_remaining",
-      current_brightness: "sensor." + n + "_current_brightness",
-      ambient_lux:        "sensor." + n + "_ambient_lux",
-      motion_bottom:      "binary_sensor." + n + "_motion_bottom",
-      motion_top:         "binary_sensor." + n + "_motion_top",
-      turn_off_delay:     "number." + n + "_turn_off_delay",
-      brightness:         "number." + n + "_brightness",
-      brightness_dim:     "number." + n + "_brightness_dim",
-      lux_threshold:      "number." + n + "_lux_threshold",
-      lux_control:        "switch." + n + "_lux_control",
-      lights:             "switch." + n + "_lights",
-      set_lux_threshold:  "button." + n + "_set_lux_threshold"
+    var ov = config.entities || {};
+    this._ent = {
+      state:              ov.state              || "sensor." + n + "_state",
+      mode:               ov.mode               || "sensor." + n + "_mode",
+      time_remaining:     ov.time_remaining     || "sensor." + n + "_time_remaining",
+      current_brightness: ov.current_brightness || "sensor." + n + "_current_brightness",
+      ambient_lux:        ov.ambient_lux        || "sensor." + n + "_ambient_lux",
+      motion_bottom:      ov.motion_bottom      || "binary_sensor." + n + "_motion_bottom",
+      motion_top:         ov.motion_top          || "binary_sensor." + n + "_motion_top",
+      turn_off_delay:     ov.turn_off_delay     || "number." + n + "_turn_off_delay",
+      brightness:         ov.brightness         || "number." + n + "_brightness",
+      brightness_dim:     ov.brightness_dim     || "number." + n + "_brightness_dim",
+      lux_threshold:      ov.lux_threshold      || "number." + n + "_lux_threshold",
+      lux_control:        ov.lux_control        || "switch." + n + "_lux_control",
+      lights:             ov.lights             || "switch." + n + "_lights",
+      set_lux_threshold:  ov.set_lux_threshold  || "button." + n + "_set_lux_threshold"
     };
 
     this._rendered = false;
@@ -64,7 +60,7 @@ class StaircaseLightingCard extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     if (!this._config) return;
-    if (!this._rendered) this._buildDom();
+    if (!this._rendered) this._build();
     this._refresh();
   }
 
@@ -74,139 +70,104 @@ class StaircaseLightingCard extends HTMLElement {
 
   connectedCallback() {
     var self = this;
-    // 1-second refresh for progress bar countdown
-    this._timer = setInterval(function() {
+    this._tick = setInterval(function() {
       if (self._hass && self._rendered) self._refreshBar();
     }, 1000);
   }
 
   disconnectedCallback() {
-    if (this._timer) { clearInterval(this._timer); this._timer = null; }
+    if (this._tick) { clearInterval(this._tick); this._tick = null; }
   }
 
   /* ── State helpers ──────────────────────────────────────── */
 
   _st(id) {
-    if (!this._hass || !this._hass.states || !this._hass.states[id]) return "unavailable";
+    if (!this._hass || !this._hass.states[id]) return null;
     return this._hass.states[id].state;
   }
 
   _num(id) {
-    var v = parseFloat(this._st(id));
+    var s = this._st(id);
+    if (s === null) return 0;
+    var v = parseFloat(s);
     return isNaN(v) ? 0 : v;
   }
 
   _isOn(id) { return this._st(id) === "on"; }
 
+  _exists(id) { return this._hass && !!this._hass.states[id]; }
+
   /* ── DOM build ──────────────────────────────────────────── */
 
-  _buildDom() {
-    var shadow = this.shadowRoot;
-    shadow.innerHTML = "";
+  _build() {
+    var sh = this.shadowRoot;
+    sh.innerHTML = "";
 
-    // --- Styles ---
     var style = document.createElement("style");
-    style.textContent = this._getStyles();
-    shadow.appendChild(style);
+    style.textContent = this._css();
+    sh.appendChild(style);
 
-    // --- Card container ---
     var card = document.createElement("ha-card");
     card.innerHTML =
-      '<div class="sl-card">' +
-        // Progress bar area (top)
-        '<div class="sl-bar-area" id="barArea">' +
-          '<div class="sl-bar-track">' +
-            '<div class="sl-bar-fill" id="barFill"></div>' +
-          '</div>' +
-          '<div class="sl-bar-time" id="barTime"></div>' +
+      '<div class="sc">' +
+        /* progress bar */
+        '<div class="bar-area" id="barArea">' +
+          '<div class="bar-track"><div class="bar-fill" id="barFill"></div></div>' +
+          '<div class="bar-time" id="barTime"></div>' +
         '</div>' +
-
-        // Center light icon
-        '<div class="sl-center" id="centerBtn">' +
+        /* center icon */
+        '<div class="center" id="centerBtn">' +
           '<ha-icon id="lightIcon" icon="' + this._lightIcon + '"></ha-icon>' +
         '</div>' +
-
-        // Mode + brightness label
-        '<div class="sl-mode" id="modeLabel"></div>' +
-
-        // Bottom status row
-        '<div class="sl-bottom">' +
-          // Left: motion icons
-          '<div class="sl-status-left">' +
-            '<div class="sl-status-icon" id="motionBottomBtn" title="Motion Bottom">' +
-              '<ha-icon id="motionBottomIcon" icon="mdi:arrow-down-bold"></ha-icon>' +
-              '<span class="sl-status-label">▼</span>' +
+        /* title */
+        '<div class="title">' + this._title + '</div>' +
+        /* mode + brightness */
+        '<div class="mode" id="modeLabel"></div>' +
+        /* bottom row */
+        '<div class="bottom">' +
+          '<div class="bot-left">' +
+            '<div class="sicon" id="mbBtn">' +
+              '<ha-icon id="mbIco" icon="mdi:motion-sensor"></ha-icon>' +
+              '<span class="slbl">▼</span>' +
             '</div>' +
-            '<div class="sl-status-icon" id="motionTopBtn" title="Motion Top">' +
-              '<ha-icon id="motionTopIcon" icon="mdi:arrow-up-bold"></ha-icon>' +
-              '<span class="sl-status-label">▲</span>' +
+            '<div class="sicon" id="mtBtn">' +
+              '<ha-icon id="mtIco" icon="mdi:motion-sensor"></ha-icon>' +
+              '<span class="slbl">▲</span>' +
             '</div>' +
           '</div>' +
-
-          // Center: lux
-          '<div class="sl-status-center" id="luxBtn">' +
-            '<ha-icon id="luxIcon" icon="mdi:brightness-5"></ha-icon>' +
-            '<span class="sl-status-label" id="luxValue"></span>' +
+          '<div class="bot-center" id="luxBtn">' +
+            '<ha-icon id="luxIco" icon="mdi:brightness-5"></ha-icon>' +
+            '<span class="slbl" id="luxVal"></span>' +
           '</div>' +
-
-          // Right: settings
-          '<div class="sl-status-right">' +
-            '<div class="sl-settings-btn" id="settingsBtn">' +
-              '<ha-icon icon="mdi:cog"></ha-icon>' +
-            '</div>' +
+          '<div class="bot-right">' +
+            '<div class="gear" id="gearBtn"><ha-icon icon="mdi:cog"></ha-icon></div>' +
           '</div>' +
         '</div>' +
+        /* missing entities warning */
+        '<div class="warn" id="warn"></div>' +
       '</div>' +
-
-      // Modal overlay (hidden by default)
-      '<div class="sl-modal-overlay" id="modalOverlay">' +
-        '<div class="sl-modal">' +
-          '<div class="sl-modal-header">' +
-            '<span class="sl-modal-title">Settings</span>' +
-            '<div class="sl-modal-close" id="modalClose">' +
-              '<ha-icon icon="mdi:close"></ha-icon>' +
-            '</div>' +
+      /* modal */
+      '<div class="overlay" id="overlay">' +
+        '<div class="modal">' +
+          '<div class="mhdr">' +
+            '<span class="mtitle">Settings</span>' +
+            '<div class="mclose" id="mclose"><ha-icon icon="mdi:close"></ha-icon></div>' +
           '</div>' +
-          '<div class="sl-modal-body" id="modalBody"></div>' +
+          '<div class="mbody" id="mbody"></div>' +
         '</div>' +
       '</div>';
 
-    shadow.appendChild(card);
+    sh.appendChild(card);
 
-    // --- Event listeners ---
     var self = this;
-
-    // Center icon tap → toggle lights switch
-    shadow.getElementById("centerBtn").addEventListener("click", function() {
-      self._toggleLights();
-    });
-
-    // Motion icons → open more-info
-    shadow.getElementById("motionBottomBtn").addEventListener("click", function() {
-      self._moreInfo(self._entities.motion_bottom);
-    });
-    shadow.getElementById("motionTopBtn").addEventListener("click", function() {
-      self._moreInfo(self._entities.motion_top);
-    });
-
-    // Lux icon → open more-info
-    shadow.getElementById("luxBtn").addEventListener("click", function() {
-      self._moreInfo(self._entities.ambient_lux);
-    });
-
-    // Settings → open modal
-    shadow.getElementById("settingsBtn").addEventListener("click", function() {
-      self._openModal();
-    });
-
-    // Modal close
-    shadow.getElementById("modalClose").addEventListener("click", function() {
-      self._closeModal();
-    });
-
-    // Overlay click → close modal
-    shadow.getElementById("modalOverlay").addEventListener("click", function(e) {
-      if (e.target.id === "modalOverlay") self._closeModal();
+    sh.getElementById("centerBtn").addEventListener("click", function() { self._toggle(); });
+    sh.getElementById("mbBtn").addEventListener("click", function() { self._info(self._ent.motion_bottom); });
+    sh.getElementById("mtBtn").addEventListener("click", function() { self._info(self._ent.motion_top); });
+    sh.getElementById("luxBtn").addEventListener("click", function() { self._info(self._ent.ambient_lux); });
+    sh.getElementById("gearBtn").addEventListener("click", function() { self._openModal(); });
+    sh.getElementById("mclose").addEventListener("click", function() { self._closeModal(); });
+    sh.getElementById("overlay").addEventListener("click", function(e) {
+      if (e.target.id === "overlay") self._closeModal();
     });
 
     this._rendered = true;
@@ -216,114 +177,108 @@ class StaircaseLightingCard extends HTMLElement {
 
   _refresh() {
     if (!this._rendered) return;
-    var shadow = this.shadowRoot;
+    var sh = this.shadowRoot;
 
-    // --- State ---
-    var stState = this._st(this._entities.state);
-    var stMode = this._st(this._entities.mode);
-    var isActive = stState === "active";
-    var isLightsOn = this._isOn(this._entities.lights);
+    // check missing entities
+    var missing = [];
+    for (var k in this._ent) {
+      if (!this._exists(this._ent[k])) missing.push(k + ": " + this._ent[k]);
+    }
+    var warn = sh.getElementById("warn");
+    if (missing.length > 0) {
+      warn.style.display = "block";
+      warn.textContent = "⚠ Not found: " + missing.join(", ");
+    } else {
+      warn.style.display = "none";
+    }
 
-    // --- Center icon color ---
-    var lightIcon = shadow.getElementById("lightIcon");
-    if (isActive || isLightsOn) {
+    // light state
+    var isActive = this._st(this._ent.state) === "active";
+    var lightsOn = this._isOn(this._ent.lights);
+    var lightIcon = sh.getElementById("lightIcon");
+
+    if (isActive || lightsOn) {
       lightIcon.style.color = "var(--state-light-active-color, #fdd835)";
     } else {
       lightIcon.style.color = "var(--state-icon-color, #9e9e9e)";
     }
 
-    // --- Mode + brightness label ---
-    var brPct = this._num(this._entities.current_brightness);
-    var modeLabel = shadow.getElementById("modeLabel");
-    if (isActive || isLightsOn) {
-      var modeTxt = stMode === "dim" ? "Dim" : "Normal";
-      modeLabel.textContent = modeTxt + " · " + brPct + "%";
+    // mode + brightness
+    var brPct = this._num(this._ent.current_brightness);
+    var modeLabel = sh.getElementById("modeLabel");
+    if (isActive || lightsOn) {
+      var m = this._st(this._ent.mode) === "dim" ? "Dim" : "Normal";
+      modeLabel.textContent = m + " · " + brPct + "%";
       modeLabel.style.color = "var(--primary-text-color)";
     } else {
       modeLabel.textContent = "Idle";
       modeLabel.style.color = "var(--secondary-text-color)";
     }
 
-    // --- Motion icons ---
-    var mbIcon = shadow.getElementById("motionBottomIcon");
-    var mtIcon = shadow.getElementById("motionTopIcon");
-    mbIcon.style.color = this._isOn(this._entities.motion_bottom)
-      ? "var(--state-binary_sensor-active-color, #fdd835)"
-      : "var(--state-icon-color, #9e9e9e)";
-    mtIcon.style.color = this._isOn(this._entities.motion_top)
-      ? "var(--state-binary_sensor-active-color, #fdd835)"
-      : "var(--state-icon-color, #9e9e9e)";
+    // motion
+    sh.getElementById("mbIco").style.color = this._isOn(this._ent.motion_bottom)
+      ? "var(--state-binary_sensor-active-color, #fdd835)" : "var(--state-icon-color, #9e9e9e)";
+    sh.getElementById("mtIco").style.color = this._isOn(this._ent.motion_top)
+      ? "var(--state-binary_sensor-active-color, #fdd835)" : "var(--state-icon-color, #9e9e9e)";
 
-    // --- Lux ---
-    var luxIcon = shadow.getElementById("luxIcon");
-    var luxValue = shadow.getElementById("luxValue");
-    var luxNum = this._num(this._entities.ambient_lux);
-    var luxThreshold = this._num(this._entities.lux_threshold);
-    luxValue.textContent = luxNum + " lx";
-    if (luxNum < luxThreshold) {
-      // Below threshold → dark/opaque icon (lights would turn on)
-      luxIcon.style.color = "var(--state-icon-color, #9e9e9e)";
-      luxIcon.style.opacity = "0.5";
+    // lux
+    var luxNum = this._num(this._ent.ambient_lux);
+    var luxTh = this._num(this._ent.lux_threshold);
+    sh.getElementById("luxVal").textContent = luxNum + " lx";
+    var luxIco = sh.getElementById("luxIco");
+    if (luxNum < luxTh) {
+      luxIco.style.color = "var(--state-icon-color, #9e9e9e)";
     } else {
-      // Above threshold → bright icon (enough light)
-      luxIcon.style.color = "var(--state-light-active-color, #fdd835)";
-      luxIcon.style.opacity = "1";
+      luxIco.style.color = "var(--state-light-active-color, #fdd835)";
     }
 
-    // --- Progress bar ---
     this._refreshBar();
-
-    // --- Update modal if open ---
     if (this._modalOpen) this._refreshModal();
   }
 
   _refreshBar() {
     if (!this._rendered) return;
-    var shadow = this.shadowRoot;
-    var barArea = shadow.getElementById("barArea");
-    var barFill = shadow.getElementById("barFill");
-    var barTime = shadow.getElementById("barTime");
+    var sh = this.shadowRoot;
+    var area = sh.getElementById("barArea");
+    var fill = sh.getElementById("barFill");
+    var time = sh.getElementById("barTime");
 
-    var remaining = this._num(this._entities.time_remaining);
-    var total = this._num(this._entities.turn_off_delay);
+    var rem = this._num(this._ent.time_remaining);
+    var tot = this._num(this._ent.turn_off_delay);
 
-    if (remaining <= 0 || total <= 0) {
-      barArea.style.display = "none";
-      return;
-    }
+    if (rem <= 0 || tot <= 0) { area.style.display = "none"; return; }
+    area.style.display = "flex";
 
-    barArea.style.display = "flex";
-    var pct = Math.min(100, (remaining / total) * 100);
-    barFill.style.width = pct + "%";
+    var pct = Math.min(100, (rem / tot) * 100);
+    fill.style.width = pct + "%";
+    fill.style.backgroundColor = pct > 50
+      ? "var(--success-color, #4caf50)"
+      : pct > 20 ? "var(--warning-color, #ff9800)" : "var(--error-color, #f44336)";
 
-    // Color: green > yellow > red as time decreases
-    if (pct > 50) {
-      barFill.style.backgroundColor = "var(--success-color, #4caf50)";
-    } else if (pct > 20) {
-      barFill.style.backgroundColor = "var(--warning-color, #ff9800)";
-    } else {
-      barFill.style.backgroundColor = "var(--error-color, #f44336)";
-    }
-
-    // Format mm:ss
-    var m = Math.floor(remaining / 60);
-    var s = Math.round(remaining % 60);
-    barTime.textContent = m + ":" + (s < 10 ? "0" : "") + s;
+    var m = Math.floor(rem / 60), s = Math.round(rem % 60);
+    time.textContent = m + ":" + (s < 10 ? "0" : "") + s;
   }
 
   /* ── Actions ────────────────────────────────────────────── */
 
-  _toggleLights() {
+  _toggle() {
     if (!this._hass) return;
-    var isOn = this._isOn(this._entities.lights);
-    this._hass.callService("switch", isOn ? "turn_off" : "turn_on", {
-      entity_id: this._entities.lights
-    });
+    var eid = this._ent.lights;
+    if (!this._exists(eid)) {
+      console.warn("StaircaseLightingCard: entity not found:", eid);
+      return;
+    }
+    this._hass.callService("switch", this._isOn(eid) ? "turn_off" : "turn_on",
+      { entity_id: eid });
   }
 
-  _moreInfo(entityId) {
+  _info(eid) {
+    if (!this._exists(eid)) {
+      console.warn("StaircaseLightingCard: entity not found:", eid);
+      return;
+    }
     var ev = new Event("hass-more-info", { bubbles: true, composed: true });
-    ev.detail = { entityId: entityId };
+    ev.detail = { entityId: eid };
     this.dispatchEvent(ev);
   }
 
@@ -331,319 +286,189 @@ class StaircaseLightingCard extends HTMLElement {
 
   _openModal() {
     this._modalOpen = true;
-    var overlay = this.shadowRoot.getElementById("modalOverlay");
-    overlay.style.display = "flex";
-    this._buildModalContent();
+    this.shadowRoot.getElementById("overlay").style.display = "flex";
+    this._buildModal();
   }
 
   _closeModal() {
     this._modalOpen = false;
-    var overlay = this.shadowRoot.getElementById("modalOverlay");
-    overlay.style.display = "none";
+    this.shadowRoot.getElementById("overlay").style.display = "none";
   }
 
-  _buildModalContent() {
-    var body = this.shadowRoot.getElementById("modalBody");
+  _buildModal() {
+    var body = this.shadowRoot.getElementById("mbody");
     var self = this;
     body.innerHTML = "";
 
-    // --- Parameter rows ---
     var params = [
-      { entity: this._entities.turn_off_delay,  label: "Turn-off delay",  icon: "mdi:timer-outline",     unit: "s",  min: 10,  max: 300, step: 10 },
-      { entity: this._entities.brightness,       label: "Brightness",      icon: "mdi:brightness-7",      unit: "%",  min: 1,   max: 100, step: 1 },
-      { entity: this._entities.brightness_dim,   label: "Dim brightness",  icon: "mdi:brightness-5",      unit: "%",  min: 1,   max: 100, step: 1 },
-      { entity: this._entities.lux_threshold,    label: "Lux threshold",   icon: "mdi:weather-sunny",     unit: "lx", min: 0,   max: 1000, step: 10 }
+      { e: this._ent.turn_off_delay, label: "Turn-off delay",  icon: "mdi:timer-outline",  unit: "s",  min:10,  max:300, step:10 },
+      { e: this._ent.brightness,      label: "Brightness",      icon: "mdi:brightness-7",   unit: "%",  min:1,   max:100, step:1 },
+      { e: this._ent.brightness_dim,   label: "Dim brightness",  icon: "mdi:brightness-5",   unit: "%",  min:1,   max:100, step:1 },
+      { e: this._ent.lux_threshold,    label: "Lux threshold",   icon: "mdi:weather-sunny",  unit: "lx", min:0,   max:1000, step:10 }
     ];
 
     for (var i = 0; i < params.length; i++) {
-      body.appendChild(this._buildSliderRow(params[i]));
+      if (this._exists(params[i].e)) body.appendChild(this._slider(params[i]));
     }
 
-    // --- Lux control switch ---
-    var luxRow = document.createElement("div");
-    luxRow.className = "sl-modal-row";
-    var luxOn = this._isOn(this._entities.lux_control);
-    luxRow.innerHTML =
-      '<div class="sl-modal-row-header">' +
-        '<ha-icon icon="mdi:theme-light-dark" style="color:var(--primary-text-color);--mdc-icon-size:20px;"></ha-icon>' +
-        '<span class="sl-modal-row-label">Lux control</span>' +
-      '</div>' +
-      '<div class="sl-modal-toggle" id="luxToggle">' +
-        '<div class="sl-toggle-track ' + (luxOn ? "on" : "") + '">' +
-          '<div class="sl-toggle-thumb"></div>' +
+    // lux control toggle
+    if (this._exists(this._ent.lux_control)) {
+      var luxOn = this._isOn(this._ent.lux_control);
+      var row = document.createElement("div");
+      row.className = "mrow mrow-toggle";
+      row.innerHTML =
+        '<div class="mrow-hdr">' +
+          '<ha-icon icon="mdi:theme-light-dark" style="--mdc-icon-size:20px"></ha-icon>' +
+          '<span class="mrow-lbl">Lux control</span>' +
         '</div>' +
-      '</div>';
-    body.appendChild(luxRow);
+        '<div class="toggle" id="luxToggle">' +
+          '<div class="ttrack ' + (luxOn ? "on" : "") + '"><div class="tthumb"></div></div>' +
+        '</div>';
+      body.appendChild(row);
 
-    // Toggle event
-    setTimeout(function() {
-      var toggle = self.shadowRoot.getElementById("luxToggle");
-      if (toggle) {
-        toggle.addEventListener("click", function() {
-          self._hass.callService("switch", luxOn ? "turn_off" : "turn_on", {
-            entity_id: self._entities.lux_control
-          });
-        });
-      }
-    }, 0);
-
-    // --- Set lux threshold button ---
-    var btnRow = document.createElement("div");
-    btnRow.className = "sl-modal-row sl-modal-btn-row";
-    var btn = document.createElement("button");
-    btn.className = "sl-modal-btn";
-    btn.textContent = "Set threshold to current lux";
-    btn.addEventListener("click", function() {
-      self._hass.callService("button", "press", {
-        entity_id: self._entities.set_lux_threshold
+      row.querySelector("#luxToggle").addEventListener("click", function() {
+        var on = self._isOn(self._ent.lux_control);
+        self._hass.callService("switch", on ? "turn_off" : "turn_on",
+          { entity_id: self._ent.lux_control });
       });
-    });
-    btnRow.appendChild(btn);
-    body.appendChild(btnRow);
+    }
+
+    // set threshold button
+    if (this._exists(this._ent.set_lux_threshold)) {
+      var brow = document.createElement("div");
+      brow.className = "mrow mrow-btn";
+      var btn = document.createElement("button");
+      btn.className = "mbtn";
+      btn.textContent = "Set threshold to current lux (" + this._num(this._ent.ambient_lux) + " lx)";
+      btn.addEventListener("click", function() {
+        self._hass.callService("button", "press", { entity_id: self._ent.set_lux_threshold });
+      });
+      brow.appendChild(btn);
+      body.appendChild(brow);
+    }
   }
 
-  _buildSliderRow(param) {
+  _slider(p) {
     var self = this;
-    var currentVal = this._num(param.entity);
-
+    var val = this._num(p.e);
     var row = document.createElement("div");
-    row.className = "sl-modal-row";
+    row.className = "mrow";
     row.innerHTML =
-      '<div class="sl-modal-row-header">' +
-        '<ha-icon icon="' + param.icon + '" style="color:var(--primary-text-color);--mdc-icon-size:20px;"></ha-icon>' +
-        '<span class="sl-modal-row-label">' + param.label + '</span>' +
-        '<span class="sl-modal-row-value" id="val_' + param.entity + '">' + currentVal + ' ' + param.unit + '</span>' +
+      '<div class="mrow-hdr">' +
+        '<ha-icon icon="' + p.icon + '" style="--mdc-icon-size:20px"></ha-icon>' +
+        '<span class="mrow-lbl">' + p.label + '</span>' +
+        '<span class="mrow-val" id="v_' + p.e + '">' + val + ' ' + p.unit + '</span>' +
       '</div>' +
-      '<input type="range" class="sl-slider" ' +
-        'min="' + param.min + '" max="' + param.max + '" step="' + param.step + '" ' +
-        'value="' + currentVal + '" id="slider_' + param.entity + '">';
+      '<input type="range" class="rng" min="' + p.min + '" max="' + p.max +
+      '" step="' + p.step + '" value="' + val + '" id="s_' + p.e + '">';
 
-    // Slider events (debounced)
-    var slider = row.querySelector("input");
-    var valSpan = row.querySelector(".sl-modal-row-value");
-    var debounceTimer = null;
+    var inp = row.querySelector("input");
+    var vspan = row.querySelector(".mrow-val");
+    var timer = null;
 
-    slider.addEventListener("input", function() {
-      valSpan.textContent = this.value + " " + param.unit;
+    inp.addEventListener("input", function() {
+      vspan.textContent = this.value + " " + p.unit;
     });
-
-    slider.addEventListener("change", function() {
+    inp.addEventListener("change", function() {
       var v = parseFloat(this.value);
-      clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(function() {
-        self._hass.callService("number", "set_value", {
-          entity_id: param.entity,
-          value: v
-        });
-      }, 300);
+      clearTimeout(timer);
+      timer = setTimeout(function() {
+        self._hass.callService("number", "set_value", { entity_id: p.e, value: v });
+      }, 250);
     });
-
     return row;
   }
 
   _refreshModal() {
-    // Update slider values from HA state
-    var params = [
-      this._entities.turn_off_delay,
-      this._entities.brightness,
-      this._entities.brightness_dim,
-      this._entities.lux_threshold
-    ];
-    for (var i = 0; i < params.length; i++) {
-      var slider = this.shadowRoot.getElementById("slider_" + params[i]);
-      if (slider && document.activeElement !== slider) {
-        slider.value = this._num(params[i]);
-      }
+    var sh = this.shadowRoot;
+    var ents = [this._ent.turn_off_delay, this._ent.brightness, this._ent.brightness_dim, this._ent.lux_threshold];
+    for (var i = 0; i < ents.length; i++) {
+      var s = sh.getElementById("s_" + ents[i]);
+      if (s && document.activeElement !== s) s.value = this._num(ents[i]);
     }
-    // Update lux toggle
-    var toggle = this.shadowRoot.getElementById("luxToggle");
-    if (toggle) {
-      var track = toggle.querySelector(".sl-toggle-track");
-      if (track) {
-        if (this._isOn(this._entities.lux_control)) {
-          track.classList.add("on");
-        } else {
-          track.classList.remove("on");
-        }
-      }
+    var t = sh.getElementById("luxToggle");
+    if (t) {
+      var tr = t.querySelector(".ttrack");
+      if (tr) { this._isOn(this._ent.lux_control) ? tr.classList.add("on") : tr.classList.remove("on"); }
     }
   }
 
-  /* ── Styles ─────────────────────────────────────────────── */
+  /* ── CSS ────────────────────────────────────────────────── */
 
-  _getStyles() {
+  _css() {
     return '' +
-      /* Card */
-      ':host { display: block; }' +
-      'ha-card { padding: 16px; position: relative; overflow: visible; }' +
+    ':host{display:block}' +
+    'ha-card{padding:16px;overflow:visible}' +
+    '.sc{display:flex;flex-direction:column;align-items:center;gap:4px;min-height:160px}' +
 
-      '.sl-card {' +
-        'display: flex; flex-direction: column; align-items: center;' +
-        'gap: 8px; min-height: 160px; position: relative;' +
-      '}' +
+    /* bar */
+    '.bar-area{display:none;width:100%;align-items:center;gap:8px}' +
+    '.bar-track{flex:1;height:6px;border-radius:3px;background:var(--divider-color,#e0e0e0);overflow:hidden}' +
+    '.bar-fill{height:100%;border-radius:3px;transition:width 1s linear}' +
+    '.bar-time{font-size:12px;font-weight:500;min-width:36px;text-align:right;color:var(--primary-text-color)}' +
 
-      /* Progress bar area */
-      '.sl-bar-area {' +
-        'display: none; width: 100%; align-items: center; gap: 8px;' +
-      '}' +
-      '.sl-bar-track {' +
-        'flex: 1; height: 6px; border-radius: 3px;' +
-        'background: var(--divider-color, #e0e0e0);' +
-        'overflow: hidden;' +
-      '}' +
-      '.sl-bar-fill {' +
-        'height: 100%; border-radius: 3px;' +
-        'transition: width 1s linear;' +
-        'background: var(--success-color, #4caf50);' +
-      '}' +
-      '.sl-bar-time {' +
-        'font-size: 12px; font-weight: 500; min-width: 36px; text-align: right;' +
-        'color: var(--primary-text-color);' +
-      '}' +
+    /* center */
+    '.center{cursor:pointer;padding:12px;border-radius:50%;transition:background .2s}' +
+    '.center:hover{background:var(--secondary-background-color,rgba(0,0,0,.05))}' +
+    '.center:active{background:var(--divider-color,rgba(0,0,0,.1))}' +
+    '.center ha-icon{--mdc-icon-size:48px;transition:color .3s}' +
 
-      /* Center icon */
-      '.sl-center {' +
-        'cursor: pointer; padding: 16px;' +
-        'border-radius: 50%;' +
-        'transition: background 0.2s;' +
-      '}' +
-      '.sl-center:hover { background: var(--secondary-background-color, rgba(0,0,0,0.05)); }' +
-      '.sl-center:active { background: var(--divider-color, rgba(0,0,0,0.1)); }' +
-      '.sl-center ha-icon {' +
-        '--mdc-icon-size: 48px;' +
-        'transition: color 0.3s;' +
-      '}' +
+    /* title */
+    '.title{font-size:14px;font-weight:600;color:var(--primary-text-color);margin-top:0}' +
 
-      /* Mode label */
-      '.sl-mode {' +
-        'font-size: 14px; font-weight: 500;' +
-        'letter-spacing: 0.5px;' +
-      '}' +
+    /* mode */
+    '.mode{font-size:13px;font-weight:400;letter-spacing:.3px}' +
 
-      /* Bottom row */
-      '.sl-bottom {' +
-        'display: flex; width: 100%; align-items: center;' +
-        'justify-content: space-between; margin-top: 8px;' +
-      '}' +
-      '.sl-status-left { display: flex; gap: 12px; }' +
-      '.sl-status-center {' +
-        'display: flex; align-items: center; gap: 4px; cursor: pointer;' +
-      '}' +
-      '.sl-status-right { display: flex; }' +
+    /* bottom */
+    '.bottom{display:flex;width:100%;align-items:center;justify-content:space-between;margin-top:8px}' +
+    '.bot-left{display:flex;gap:10px}' +
+    '.bot-center{display:flex;align-items:center;gap:4px;cursor:pointer}' +
+    '.bot-right{display:flex}' +
+    '.sicon{display:flex;flex-direction:column;align-items:center;cursor:pointer;padding:4px}' +
+    '.sicon ha-icon{--mdc-icon-size:22px;transition:color .3s}' +
+    '.slbl{font-size:10px;color:var(--secondary-text-color);margin-top:2px}' +
+    '.bot-center ha-icon{--mdc-icon-size:22px}' +
+    '#luxVal{font-size:11px;color:var(--secondary-text-color)}' +
+    '.gear{cursor:pointer;padding:4px;border-radius:50%;transition:background .2s}' +
+    '.gear:hover{background:var(--secondary-background-color)}' +
+    '.gear ha-icon{--mdc-icon-size:22px;color:var(--secondary-text-color)}' +
 
-      '.sl-status-icon {' +
-        'display: flex; flex-direction: column; align-items: center;' +
-        'cursor: pointer; padding: 4px;' +
-      '}' +
-      '.sl-status-icon ha-icon { --mdc-icon-size: 22px; transition: color 0.3s; }' +
-      '.sl-status-label {' +
-        'font-size: 10px; color: var(--secondary-text-color); margin-top: 2px;' +
-      '}' +
-      '.sl-status-center ha-icon { --mdc-icon-size: 22px; }' +
-      '#luxValue { font-size: 11px; color: var(--secondary-text-color); }' +
+    /* warn */
+    '.warn{display:none;font-size:10px;color:var(--error-color,#f44336);margin-top:6px;word-break:break-all;text-align:center;max-width:100%}' +
 
-      /* Settings button */
-      '.sl-settings-btn {' +
-        'cursor: pointer; padding: 4px;' +
-        'border-radius: 50%;' +
-        'transition: background 0.2s;' +
-      '}' +
-      '.sl-settings-btn:hover { background: var(--secondary-background-color); }' +
-      '.sl-settings-btn ha-icon {' +
-        '--mdc-icon-size: 22px; color: var(--secondary-text-color);' +
-      '}' +
+    /* modal */
+    '.overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:999;align-items:center;justify-content:center}' +
+    '.modal{background:var(--card-background-color,#fff);border-radius:16px;width:90%;max-width:380px;box-shadow:0 8px 32px rgba(0,0,0,.3);overflow:hidden}' +
+    '.mhdr{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--divider-color,#e0e0e0)}' +
+    '.mtitle{font-size:17px;font-weight:600;color:var(--primary-text-color)}' +
+    '.mclose{cursor:pointer;padding:4px;border-radius:50%}' +
+    '.mclose:hover{background:var(--secondary-background-color)}' +
+    '.mclose ha-icon{--mdc-icon-size:20px;color:var(--secondary-text-color)}' +
+    '.mbody{padding:14px 18px}' +
 
-      /* Modal overlay */
-      '.sl-modal-overlay {' +
-        'display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;' +
-        'background: rgba(0,0,0,0.5); z-index: 999;' +
-        'align-items: center; justify-content: center;' +
-      '}' +
-      '.sl-modal {' +
-        'background: var(--card-background-color, #fff);' +
-        'border-radius: 16px; padding: 0; width: 90%; max-width: 380px;' +
-        'box-shadow: 0 8px 32px rgba(0,0,0,0.3);' +
-        'overflow: hidden;' +
-      '}' +
-      '.sl-modal-header {' +
-        'display: flex; justify-content: space-between; align-items: center;' +
-        'padding: 16px 20px; border-bottom: 1px solid var(--divider-color, #e0e0e0);' +
-      '}' +
-      '.sl-modal-title {' +
-        'font-size: 18px; font-weight: 600; color: var(--primary-text-color);' +
-      '}' +
-      '.sl-modal-close {' +
-        'cursor: pointer; padding: 4px; border-radius: 50%;' +
-      '}' +
-      '.sl-modal-close:hover { background: var(--secondary-background-color); }' +
-      '.sl-modal-close ha-icon {' +
-        '--mdc-icon-size: 20px; color: var(--secondary-text-color);' +
-      '}' +
-      '.sl-modal-body { padding: 16px 20px; }' +
+    '.mrow{margin-bottom:14px}' +
+    '.mrow-hdr{display:flex;align-items:center;gap:8px;margin-bottom:6px}' +
+    '.mrow-lbl{flex:1;font-size:13px;color:var(--primary-text-color)}' +
+    '.mrow-val{font-size:12px;font-weight:500;color:var(--primary-color);min-width:48px;text-align:right}' +
 
-      /* Modal rows */
-      '.sl-modal-row { margin-bottom: 16px; }' +
-      '.sl-modal-row-header {' +
-        'display: flex; align-items: center; gap: 8px; margin-bottom: 6px;' +
-      '}' +
-      '.sl-modal-row-label {' +
-        'flex: 1; font-size: 14px; color: var(--primary-text-color);' +
-      '}' +
-      '.sl-modal-row-value {' +
-        'font-size: 13px; font-weight: 500; color: var(--primary-color);' +
-        'min-width: 50px; text-align: right;' +
-      '}' +
+    '.rng{width:100%;height:6px;border-radius:3px;outline:none;-webkit-appearance:none;appearance:none;background:var(--divider-color,#e0e0e0)}' +
+    '.rng::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;background:var(--primary-color,#03a9f4);cursor:pointer;border:none}' +
+    '.rng::-moz-range-thumb{width:20px;height:20px;border-radius:50%;background:var(--primary-color,#03a9f4);cursor:pointer;border:none}' +
 
-      /* Slider */
-      '.sl-slider {' +
-        'width: 100%; height: 6px; border-radius: 3px; outline: none;' +
-        '-webkit-appearance: none; appearance: none;' +
-        'background: var(--divider-color, #e0e0e0);' +
-      '}' +
-      '.sl-slider::-webkit-slider-thumb {' +
-        '-webkit-appearance: none; width: 20px; height: 20px;' +
-        'border-radius: 50%; background: var(--primary-color, #03a9f4);' +
-        'cursor: pointer; border: none;' +
-      '}' +
-      '.sl-slider::-moz-range-thumb {' +
-        'width: 20px; height: 20px; border-radius: 50%;' +
-        'background: var(--primary-color, #03a9f4);' +
-        'cursor: pointer; border: none;' +
-      '}' +
+    '.mrow-toggle{display:flex;align-items:center;justify-content:space-between}' +
+    '.toggle{cursor:pointer}' +
+    '.ttrack{width:44px;height:22px;border-radius:11px;background:var(--divider-color,#bdbdbd);position:relative;transition:background .2s}' +
+    '.ttrack.on{background:var(--primary-color,#03a9f4)}' +
+    '.tthumb{width:18px;height:18px;border-radius:50%;background:#fff;position:absolute;top:2px;left:2px;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.3)}' +
+    '.ttrack.on .tthumb{left:24px}' +
 
-      /* Toggle */
-      '.sl-modal-toggle { cursor: pointer; display: inline-block; }' +
-      '.sl-toggle-track {' +
-        'width: 44px; height: 22px; border-radius: 11px;' +
-        'background: var(--divider-color, #bdbdbd);' +
-        'position: relative; transition: background 0.2s;' +
-      '}' +
-      '.sl-toggle-track.on {' +
-        'background: var(--primary-color, #03a9f4);' +
-      '}' +
-      '.sl-toggle-thumb {' +
-        'width: 18px; height: 18px; border-radius: 50%;' +
-        'background: #fff; position: absolute; top: 2px; left: 2px;' +
-        'transition: left 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,0.3);' +
-      '}' +
-      '.sl-toggle-track.on .sl-toggle-thumb { left: 24px; }' +
-
-      /* Button */
-      '.sl-modal-btn-row { text-align: center; margin-top: 8px; padding-top: 12px;' +
-        'border-top: 1px solid var(--divider-color, #e0e0e0); }' +
-      '.sl-modal-btn {' +
-        'padding: 8px 20px; border: none; border-radius: 8px;' +
-        'background: var(--primary-color, #03a9f4); color: #fff;' +
-        'font-size: 13px; font-weight: 500; cursor: pointer;' +
-        'transition: opacity 0.2s;' +
-      '}' +
-      '.sl-modal-btn:hover { opacity: 0.85; }' +
-      '.sl-modal-btn:active { opacity: 0.7; }' +
+    '.mrow-btn{text-align:center;margin-top:8px;padding-top:10px;border-top:1px solid var(--divider-color,#e0e0e0)}' +
+    '.mbtn{padding:8px 16px;border:none;border-radius:8px;background:var(--primary-color,#03a9f4);color:#fff;font-size:13px;font-weight:500;cursor:pointer;transition:opacity .2s}' +
+    '.mbtn:hover{opacity:.85}' +
+    '.mbtn:active{opacity:.7}' +
     '';
   }
 }
-
-/* ── Registration ─────────────────────────────────────────── */
 
 customElements.define("staircase-lighting-card", StaircaseLightingCard);
 
@@ -651,11 +476,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "staircase-lighting-card",
   name: "Staircase Lighting Card",
-  description: "Card for the Staircase Lighting integration with status icons and settings popup",
+  description: "Card for the Staircase Lighting integration",
   preview: false
 });
-
-console.info(
-  "%c STAIRCASE-LIGHTING-CARD v1 ",
-  "color:#fff;background:#4285f4;font-weight:bold;padding:2px 6px;border-radius:4px;"
-);
+console.info("%c STAIRCASE-LIGHTING-CARD v2 ","color:#fff;background:#4285f4;font-weight:bold;padding:2px 6px;border-radius:4px;");
