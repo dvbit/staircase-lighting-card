@@ -26,17 +26,37 @@ Custom Lovelace card for the [Staircase Lighting](https://github.com/dvbit/stair
 
 ```yaml
 type: custom:staircase-lighting-card
-name: hall_stairs       # slugified device name (as in entity IDs)
+title: Scala Piano 1              # display name shown under icon
+name: scala_piano_1               # entity prefix (slugified device name)
+light_icon: mdi:ceiling-light     # optional, default: mdi:stairs
 ```
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `name` | string | **required** | Slugified device name (the part before `_state` in `sensor.<name>_state`) |
-| `icon` | string | `mdi:stairs` | Main icon |
+| `title` | string | same as `name` | Display name shown under the icon |
+| `name` | string | **required** | Slugified device name (entity prefix) |
+| `light_icon` | string | `mdi:stairs` | Custom icon for the light |
+
+### Entity Override
+
+If HA generated entity IDs different from the defaults, override any entity:
+
+```yaml
+type: custom:staircase-lighting-card
+title: Scala Piano 1
+name: scala_piano_1
+entities:
+  brightness_dim: number.scala_piano_1_dim_brightness
+  lights: switch.scala_piano_1_luci
+```
+
+Available keys: `state`, `mode`, `time_remaining`, `current_brightness`, `ambient_lux`, `motion_bottom`, `motion_top`, `turn_off_delay`, `brightness`, `brightness_dim`, `lux_threshold`, `lux_control`, `lights`, `set_lux_threshold`
 
 ### Finding your device name
 
 Go to **Settings → Devices & Services → Staircase Lighting** and look at the entity IDs. If you see `sensor.scala_piano_1_state`, your `name` is `scala_piano_1`.
+
+If some entities show as "Not found" in the card, check the actual entity IDs in HA and use the `entities` override.
 
 ## Card Layout
 
