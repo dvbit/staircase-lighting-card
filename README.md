@@ -26,16 +26,21 @@ Custom Lovelace card for the [Staircase Lighting](https://github.com/dvbit/stair
 
 ```yaml
 type: custom:staircase-lighting-card
-title: Scala Piano 1              # display name shown under icon
-name: scala_piano_1               # entity prefix (slugified device name)
+title: Scala Soggiorno            # display name shown under icon
+name: scala_soggiorno             # entity prefix: lowercase, underscores, no spaces
 light_icon: mdi:ceiling-light     # optional, default: mdi:stairs
 ```
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `title` | string | same as `name` | Display name shown under the icon |
-| `name` | string | **required** | Slugified device name (entity prefix) |
+| `title` | string | same as `name` | Display name shown under the icon (any format) |
+| `name` | string | **required** | Entity prefix — must be **lowercase with underscores**, exactly as it appears in entity IDs |
 | `light_icon` | string | `mdi:stairs` | Custom icon for the light |
+
+### Finding your `name`
+
+Go to **Settings → Devices & Services → Staircase Lighting** → click the device → look at entity IDs.
+If you see `sensor.scala_soggiorno_state`, your `name` is `scala_soggiorno`.
 
 ### Entity Override
 
