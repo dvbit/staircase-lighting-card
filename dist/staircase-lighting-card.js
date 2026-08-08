@@ -484,4 +484,4 @@ window.customCards.push({
   description: "Card for the Staircase Lighting integration",
   preview: false
 });
-console.info("%c STAIRCASE-LIGHTING-CARD v2 ","color:#fff;background:#4285f4;font-weight:bold;padding:2px 6px;border-radius:4px;");
+console.info("%c STAIRCASE-LIGHTING-CARD v3 ","color:#fff;background:#4285f4;font-weight:bold;padding:2px 6px;border-radius:4px;");
