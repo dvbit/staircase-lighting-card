@@ -28,14 +28,19 @@ class StaircaseLightingCard extends HTMLElement {
 
   /* ── Config ─────────────────────────────────────────────── */
 
+  /* Slugify: lowercase, spaces/hyphens to underscores, strip non-alnum */
+  _slugify(s) {
+    return s.toLowerCase().replace(/[\s\-]+/g, "_").replace(/[^a-z0-9_]/g, "");
+  }
+
   setConfig(config) {
     if (!config.name) throw new Error("'name' is required (entity prefix)");
     this._config = config;
     this._lightIcon = config.light_icon || config.icon || "mdi:stairs";
     this._title = config.title || config.name;
 
-    // Build entity map — user overrides via config.entities
-    var n = config.name;
+    // Slugify name to match HA entity_id format
+    var n = this._slugify(config.name);
     var ov = config.entities || {};
     this._ent = {
       state:              ov.state              || "sensor." + n + "_state",
