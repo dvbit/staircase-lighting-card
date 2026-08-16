@@ -47,6 +47,7 @@ class StaircaseLightingCard extends HTMLElement {
       mode:               ov.mode               || "sensor." + n + "_mode",
       time_remaining:     ov.time_remaining     || "sensor." + n + "_time_remaining",
       current_brightness: ov.current_brightness || "sensor." + n + "_current_brightness",
+      direction:          ov.direction          || "sensor." + n + "_direction",
       ambient_lux:        ov.ambient_lux        || "sensor." + n + "_ambient_lux",
       motion_bottom:      ov.motion_bottom      || "binary_sensor." + n + "_motion_bottom",
       motion_top:         ov.motion_top          || "binary_sensor." + n + "_motion_top",
@@ -222,7 +223,9 @@ class StaircaseLightingCard extends HTMLElement {
       modeLabel.style.color = "var(--warning-color, #ff9800)";
     } else if (isActive || lightsOn) {
       var m = this._st(this._ent.mode) === "dim" ? "Dim" : "Normal";
-      modeLabel.textContent = m + " · " + brPct + "%";
+      var dir = this._st(this._ent.direction);
+      var dirIcon = dir === "up" ? " ↑" : dir === "down" ? " ↓" : "";
+      modeLabel.textContent = m + " · " + brPct + "%" + dirIcon;
       modeLabel.style.color = "var(--primary-text-color)";
     } else {
       modeLabel.textContent = "Idle";
