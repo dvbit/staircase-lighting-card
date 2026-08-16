@@ -54,6 +54,8 @@ class StaircaseLightingCard extends HTMLElement {
       brightness:         ov.brightness         || "number." + n + "_brightness",
       brightness_dim:     ov.brightness_dim     || "number." + n + "_brightness_dim",
       lux_threshold:      ov.lux_threshold      || "number." + n + "_lux_threshold",
+      warning_dim_brightness: ov.warning_dim_brightness || "number." + n + "_warning_dim_brightness",
+      warning_dim_duration:   ov.warning_dim_duration   || "number." + n + "_warning_dim_duration",
       lux_control:        ov.lux_control        || "switch." + n + "_lux_control",
       lights:             ov.lights             || "switch." + n + "_lights",
       set_lux_threshold:  ov.set_lux_threshold  || "button." + n + "_set_lux_threshold"
@@ -198,11 +200,15 @@ class StaircaseLightingCard extends HTMLElement {
     }
 
     // light state
-    var isActive = this._st(this._ent.state) === "active";
+    var stState = this._st(this._ent.state);
+    var isActive = stState === "active";
+    var isWarning = stState === "warning";
     var lightsOn = this._isOn(this._ent.lights);
     var lightIcon = sh.getElementById("lightIcon");
 
-    if (isActive || lightsOn) {
+    if (isWarning) {
+      lightIcon.style.color = "var(--warning-color, #ff9800)";
+    } else if (isActive || lightsOn) {
       lightIcon.style.color = "var(--state-light-active-color, #fdd835)";
     } else {
       lightIcon.style.color = "var(--state-icon-color, #9e9e9e)";
@@ -211,7 +217,10 @@ class StaircaseLightingCard extends HTMLElement {
     // mode + brightness
     var brPct = this._num(this._ent.current_brightness);
     var modeLabel = sh.getElementById("modeLabel");
-    if (isActive || lightsOn) {
+    if (isWarning) {
+      modeLabel.textContent = "⚠ Warning · " + brPct + "%";
+      modeLabel.style.color = "var(--warning-color, #ff9800)";
+    } else if (isActive || lightsOn) {
       var m = this._st(this._ent.mode) === "dim" ? "Dim" : "Normal";
       modeLabel.textContent = m + " · " + brPct + "%";
       modeLabel.style.color = "var(--primary-text-color)";
@@ -309,7 +318,9 @@ class StaircaseLightingCard extends HTMLElement {
       { e: this._ent.turn_off_delay, label: "Turn-off delay",  icon: "mdi:timer-outline",  unit: "s",  min:10,  max:300, step:10 },
       { e: this._ent.brightness,      label: "Brightness",      icon: "mdi:brightness-7",   unit: "%",  min:1,   max:100, step:1 },
       { e: this._ent.brightness_dim,   label: "Dim brightness",  icon: "mdi:brightness-5",   unit: "%",  min:1,   max:100, step:1 },
-      { e: this._ent.lux_threshold,    label: "Lux threshold",   icon: "mdi:weather-sunny",  unit: "lx", min:0,   max:1000, step:10 }
+      { e: this._ent.lux_threshold,    label: "Lux threshold",   icon: "mdi:weather-sunny",  unit: "lx", min:0,   max:1000, step:10 },
+      { e: this._ent.warning_dim_brightness, label: "Warning brightness", icon: "mdi:brightness-4", unit: "%", min:1, max:100, step:1 },
+      { e: this._ent.warning_dim_duration, label: "Warning duration", icon: "mdi:timer-alert-outline", unit: "s", min:1, max:60, step:1 }
     ];
 
     for (var i = 0; i < params.length; i++) {
@@ -386,7 +397,7 @@ class StaircaseLightingCard extends HTMLElement {
 
   _refreshModal() {
     var sh = this.shadowRoot;
-    var ents = [this._ent.turn_off_delay, this._ent.brightness, this._ent.brightness_dim, this._ent.lux_threshold];
+    var ents = [this._ent.turn_off_delay, this._ent.brightness, this._ent.brightness_dim, this._ent.lux_threshold, this._ent.warning_dim_brightness, this._ent.warning_dim_duration];
     for (var i = 0; i < ents.length; i++) {
       var s = sh.getElementById("s_" + ents[i]);
       if (s && document.activeElement !== s) s.value = this._num(ents[i]);
@@ -484,4 +495,4 @@ window.customCards.push({
   description: "Card for the Staircase Lighting integration",
   preview: false
 });
-console.info("%c STAIRCASE-LIGHTING-CARD v3 ","color:#fff;background:#4285f4;font-weight:bold;padding:2px 6px;border-radius:4px;");
+console.info("%c STAIRCASE-LIGHTING-CARD v4 ","color:#fff;background:#4285f4;font-weight:bold;padding:2px 6px;border-radius:4px;");
